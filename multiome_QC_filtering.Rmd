@@ -1,0 +1,206 @@
+---
+title: "Multiome_august_2022_EpiLC_PGCLC"
+output: html_notebook
+---
+
+
+```{r}
+#Load the required libraries 
+
+library(Seurat)
+library(dplyr)
+library(patchwork)
+library(Signac)
+library (BSgenome.Mmusculus.UCSC.mm10)
+library (EnsDb.Mmusculus.v79)
+library(SeuratDisk)
+
+```
+```
+
+#Load the data------------------------------------------------------------
+
+Prior to this: Fastq files were obtained cellranger-arc mkfastq (run by western general facility). Cellranger-arc count was then run for each sample (PGCLC and EpiLC) and results were aggregated through the cell ranger aggr pipeline (cellranger-arc aggr). You need to specify the DIRECTORY where the outputs are, usually names as "outs". 
+Cell ranger runs through command line, code can be found at http://129.215.159.174//reports/index.php?title=Sara_Multiome
+
+##Counts and fragpath-----------------------
+```{r}
+
+counts <- Read10X_h5("/Sara/projects/Multiome/aggr/aggr_EpilC_PGCLC/outs/filtered_feature_bc_matrix.h5")
+fragpath <- "/Sara/projects/Multiome/aggr/aggr_EpilC_PGCLC/outs/atac_fragments.tsv.gz"
+
+```
+
+
+##Metadata -------------------------
+Metadata is a csv file containing the following metrics: 
+https://support.10xgenomics.com/single-cell-multiome-atac-gex/software/pipelines/latest/output/per_barcode_metrics
+(number of reads, number of mapped reads, number of exonic/intronic reads, number of ATAC fragments that overlap with peaks, or TSS regions,etc)
+
+Cell ranger produced one metadata file per sample, so I need to combine them before loading them into the seurat object. I then add a label to differentiate which cells come from EpiLC and which ones come from PGCLCs, and store that in the metadata column "sample"
+
+
+```{r}
+metadata_Epi <- read.csv(
+  file = "/Sara/projects/Multiome/counts/EpiLC/outs/per_barcode_metrics.csv",
+  header = TRUE,
+  row.names = 1
+)
+
+metadata_PG <- read.csv(
+  file = "/Sara/projects/Multiome/counts/PGCLC/outs/per_barcode_metrics.csv",
+  header = TRUE,
+  row.names = 1
+)
+
+Epi<-rep(c("EpiLC"),times=736095) #times depends on number of cells 
+metadata_Epi["sample"] <- Epi 
+
+PG<-rep(c("PGCLC"),times=736239)
+metadata_PG["sample"] <- PG 
+
+metadata <- rbind (metadata_Epi, metadata_PG) 
+```
+
+
+##Build the seurat object 
+
+Use the count matrix to create a Seurat object (object serves as a container that contains both data (like the count matrix) and analysis (like PCA, or clustering results) for a single-cell dataset).
+First create the object with the RNA gene expression data and then add the ATAC as a chromatin Assay
+Name of the seurat object is "pbmc"
+
+```{r}
+annotation <- GetGRangesFromEnsDb(ensdb = EnsDb.Mmusculus.v79)
+seqlevelsStyle(annotation) <- "UCSC"
+
+pbmc <- CreateSeuratObject(
+  counts = counts$`Gene Expression`,
+  assay = "RNA",
+  meta.data = metadata
+)
+pbmc
+
+
+pbmc[["ATAC"]] <- CreateChromatinAssay(
+  counts = counts$Peaks,
+  sep = c(":", "-"),
+  fragments = fragpath,
+  annotation = annotation
+)
+
+pbmc
+```
+
+
+#Quality Control----------------------------------------------------------
+##RNA-seq-----------------------------------
+
+For RNA-seq check:
+
+• nFeature_RNA (number of unique genes detected in each cell) - low numbers can relate to low-quality cells or empty droplets while very high numbers relate to cell doublets or multiplets 
+• nCount_RNA (total number of molecules detected within a cell) - correlates with nFeature but count UMIs instead of genes. Low numbers = low-quality/empty droplet, high = doublet/multiplex.  
+• Percentage of the mitochondrial reads - Low-quality / dying cells often exhibit extensive mitochondrial contamination
+
+```{r}
+pbmc[["percent.mt"]] <- PercentageFeatureSet(pbmc, pattern = "^mt-", assay = "RNA") # calulcate percentage of mitochondial reads, all mitochondial genes start with "mt-"
+
+# Visualize QC metrics as a violin plot
+VlnPlot(pbmc, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3, pt.size = 0)
+
+# FeatureScatter is typically used to visualize feature-feature relationships
+plot1 <- FeatureScatter(pbmc, feature1 = "nCount_RNA", feature2 = "percent.mt")
+plot2 <- FeatureScatter(pbmc, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+plot1
+plot2
+```
+
+##Atac-seq----------------------
+
+For ATAC-seq we need to check: 
+
+•	Nucleosome banding patter - DNA fragment sizes should reflect the length of DNA wrapped around a single nucleosome
+•	Transcriptional start site (TSS) enrichment score. -  ratio of fragments centered at the TSS to fragments in TSS-flanking regions. Low scores are characteristic of poor ATAC-seq experiments.
+•	Total number of fragments in peaks. low value indicates low cuality cells while very high values can represent doublests or multiplexes.
+•	Fraction of fragments in peaks - fraction of all fragments that fall within ATAC-seq peaks.
+•Blacklist regions - the ratio of reads regions often associated with artefactual signal. Cells with high values often represent technical artifacts.
+
+```{r}
+#Create quality control metadata for ATAC
+pbmc <- NucleosomeSignal(pbmc)
+pbmc <- TSSEnrichment(pbmc)
+
+pbmc$pct_reads_in_peaks <- pbmc$atac_peak_region_fragments/ pbmc$atac_fragments * 100
+pbmc$blacklist_ratio <- FractionCountsInRegion(
+  object = pbmc, 
+  assay = 'ATAC',
+  regions = blacklist_mm10
+)
+```
+
+```{r}
+#Plot violin plots for ATAC quality control
+VlnPlot(
+  object = pbmc,
+  features = c("nCount_ATAC", 'TSS.enrichment', 'blacklist_ratio', 'nucleosome_signal'),
+  pt.size = 0,
+  ncol = 4,
+  )
+```
+
+
+```{r}
+#Nucleosome histogram
+pbmc$nucleosome_group <- ifelse(pbmc$nucleosome_signal > 4, 'NS > 4', 'NS < 4')
+FragmentHistogram(object = pbmc, group.by = 'nucleosome_group')
+
+#TSS signal enrichment 
+pbmc$high.tss <- ifelse(pbmc$TSS.enrichment > 2, 'High', 'Low')
+TSSPlot(pbmc, group.by = 'high.tss') + NoLegend()
+```
+
+#Save unfiltered data 
+```{r}
+SaveH5Seurat(pbmc, filename ="multiome_unfiltered_august22", overwrite = TRUE) # save seurat object before filtering
+```
+
+
+#Filter low quality cells--------------------------------------------------------------------------------------
+
+For this you need to look at the QC plots, numbers depend on cell type, conditions, etc. Based on where the bulk of your cells are. 
+
+```{r}
+pbmc_filter <- subset(
+ x = pbmc,
+   subset = nCount_ATAC < 100000 &
+   nCount_RNA < 22000 &
+   nCount_ATAC > 1000 &
+   nCount_RNA > 1200 &
+   nFeature_RNA > 1500 &
+   blacklist_ratio < 0.035 &
+   nucleosome_signal < 1.3 &
+   nucleosome_signal > 0.4 &
+   TSS.enrichment > 1 &
+   TSS.enrichment < 10 &
+   percent.mt < 15
+)
+
+
+pbmc_filter #check number of cells that have passed all the QC filters
+
+```
+
+
+Check spread of the data after filtering
+
+```{r}
+
+VlnPlot(pbmc_filter, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3, pt.size = 0)
+
+VlnPlot(
+  object = pbmc_filter,
+  features = c("nCount_ATAC", 'TSS.enrichment', "blacklist_ratio", 'nucleosome_signal'),
+  pt.size = 0,
+  ncol = 4,
+  )
+
+```
