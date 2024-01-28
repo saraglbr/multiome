@@ -3,10 +3,8 @@ title: "Multiome_august_2022_EpiLC_PGCLC"
 output: html_notebook
 ---
 
-
-```{r}
 #Load the required libraries 
-
+```{r}
 library(Seurat)
 library(dplyr)
 library(patchwork)
@@ -14,12 +12,9 @@ library(Signac)
 library (BSgenome.Mmusculus.UCSC.mm10)
 library (EnsDb.Mmusculus.v79)
 library(SeuratDisk)
-
-```
 ```
 
 #Load the data------------------------------------------------------------
-
 Prior to this: Fastq files were obtained cellranger-arc mkfastq (run by western general facility). Cellranger-arc count was then run for each sample (PGCLC and EpiLC) and results were aggregated through the cell ranger aggr pipeline (cellranger-arc aggr). You need to specify the DIRECTORY where the outputs are, usually names as "outs". 
 Cell ranger runs through command line, code can be found at http://129.215.159.174//reports/index.php?title=Sara_Multiome
 
@@ -202,5 +197,10 @@ VlnPlot(
   pt.size = 0,
   ncol = 4,
   )
+```
 
+
+#Save filtered data 
+```{r}
+SaveH5Seurat(pbmc, filename ="multiome_filtered_august22", overwrite = TRUE) # save seurat object before filtering
 ```
