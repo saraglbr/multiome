@@ -1,0 +1,67 @@
+---
+title: "multiome_peak_calling_and_normalization"
+output: html_notebook
+---
+
+#Peak calling
+Peaks identified by cell ranger are not great for motif enrichment and peak-to-gene linkage (it might merge distinct peaks that are close together). So I use MACS2 to find peaks 
+
+```{r}
+#Find peaks with MACS2, on all cells together (there's the option of grouping cells to find specific cells, could be run later once cell populations ahve been identified)
+peaks <- CallPeaks(pbmc_filter, macs2.path = "/home/sarag/.local/bin/macs2")
+
+# remove peaks on nonstandard chromosomes and in genomic blacklist regions
+peaks <- keepStandardChromosomes(peaks, pruning.mode = "coarse")
+
+# quantify counts in each peak
+macs2_counts <- FeatureMatrix(
+  fragments = Fragments(pbmc_filter),
+  features = peaks,
+  cells = colnames(pbmc_filter)
+)
+
+# Add the MACS2 peaks to Seurat object as a new assay "peaks" 
+pbmc_filter[["peaks"]] <- CreateChromatinAssay(
+  counts = macs2_counts,
+  fragments = "/Sara/projects/Multiome/counts/pgclc/outs/atac_fragments.tsv.gz",
+  annotation = annotation
+)
+
+
+```
+
+
+#Normalize RNA data 
+```{r}
+#Set RNA as default assay
+DefaultAssay(pbmc_filter) <- "RNA"
+
+#This command does 3 things: normalize and scale the data, and find top variable features 
+pbmc_filter <- SCTransform(pbmc_filter)
+
+#PCA
+pbmc_filter <- RunPCA(pbmc_filter)
+
+```
+
+#Normalize ATAC data
+```{r}
+#Set the MAC2 identified peaks as defailt assay
+DefaultAssay(pbmc_filter) <- "peaks"
+
+#Select top features (using top 95%) if you can't find anything can change to be more selective 
+pbmc_filter <- FindTopFeatures(pbmc_filter, min.cutoff = 5)
+
+#Normalize peaks - frequency-inverse document frequency, normalizes across cells and across peaks 
+pbmc_filter <- RunTFIDF(pbmc_filter)
+
+#Dimension reduction - similar to a PCA
+pbmc_filter <- RunSVD(pbmc_filter)
+
+```
+
+#Save normalized seurat object 
+```{r}
+SaveH5Seurat(pbmc_filter, filename ="multiome_normalized_september22", overwrite = TRUE)
+```
+
