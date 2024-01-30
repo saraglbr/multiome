@@ -4,6 +4,12 @@ author: "saraglbr"
 output: html_notebook
 ---
 
+#Load filtered seurat object (after QC and filtering of low quality cells)
+```{r}
+pbmc_filter <- LoadH5Seurat("multiome_filtered_august22.h5seurat")
+```
+
+
 #Peak calling
 Peaks identified by cell ranger are not great for motif enrichment and peak-to-gene linkage (it might merge distinct peaks that are close together). So I use MACS2 to find peaks 
 
@@ -27,8 +33,6 @@ pbmc_filter[["peaks"]] <- CreateChromatinAssay(
   fragments = "/Sara/projects/Multiome/counts/pgclc/outs/atac_fragments.tsv.gz",
   annotation = annotation
 )
-
-
 ```
 
 
