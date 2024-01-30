@@ -3,6 +3,7 @@ title: "Multiome_august_2022_EpiLC_PGCLC"
 author: "saraglbr"
 output: html_notebook
 ---
+Objective: to assess the quality of the data at both the RNA and ATAC level and filter out low quality cells. 
 
 #Load the required libraries 
 ```{r}
