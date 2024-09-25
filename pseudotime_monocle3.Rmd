@@ -1,0 +1,85 @@
+---
+title: "multiome_RNA_cell_populations"
+author: "saraglbr"
+output: html_document
+---
+
+Objective of this part of the code is to use the RNA seq to identify populations of interest (EpiLCs and PGCLCs) based on gene expression of known markers, and identify the identity of "other" cells within PGCLC aggregates. Also to study the heterogeneity of EpiLCs at the RNA-seq level
+
+#Libraries
+```{r}
+library(Seurat)
+library(SeuratWrappers)
+library(monocle3)
+```
+
+#Load data and select cells from PGCLC aggergates only 
+```{r}
+setwd("~/phd/thesis_figures/Single_Cell_Chapter/multiome")
+pbmc_filter <- LoadH5Seurat("multiome_all_done.h5seurat")
+pbmc_filter$sample[pbmc_filter$sample=="NA"] <- "D2 aggregate"
+table(pbmc_filter@meta.data$sample)
+pbmc_pg <- subset(pbmc_filter, subset = sample ==  "D2 aggregate")
+```
+
+#Convert to monocle3 object
+```{r}
+#Convert the Seurat object 'pbmc_pg' to a Monocle3 cell_data_set object for trajectory analysis.
+PGCLCs.cds <- as.cell_data_set(pbmc_pg)
+```
+
+#3D analysis
+```{r}
+#Reduce the dimensionality to 3 dimensions
+PGCLCs.cds <- reduce_dimension(PGCLCs.cds, max_components = 3)
+#Cluster the cells using the UMAP reduction method.
+PGCLCs.cds <- cluster_cells(cds = PGCLCs.cds, reduction_method = "UMAP",
+                            resolution = 0.0005)
+# Learn the trajectory graph,
+PGCLCs.cds <- learn_graph(PGCLCs.cds)
+#Calculate pseudotime scores
+PGCLCs.cds <- order_cells(PGCLCs.cds)
+
+#Plot cells in 3D
+plot_cells_3d(PGCLCs.cds, color_cells_by="cluster")
+plot_cells_3d(PGCLCs.cds, color_cells_by="pseudotime")
+PGCLCs.cds@rowRanges@elementMetadata@listData[["gene_short_name"]] <- rownames(pbmc_pg[["SCT"]])
+
+#Use Otx2 expression to identify a possible "start" site
+plot_cells_3d(PGCLCs.cds, genes = c("Otx2"),
+              show_trajectory_graph=FALSE,
+              color_scale = "Viridis")
+
+```
+
+
+```{r}
+#Re-load data for 2D analysis your data
+PGCLCs.cds <- as.cell_data_set(pbmc_pg)
+
+# Reduce dimensionality to 2D
+PGCLCs.cds <- cluster_cells(PGCLCs.cds, resolution = 0.001)
+plot_cells(PGCLCs.cds, show_trajectory_graph = FALSE)
+plot_cells(PGCLCs.cds, color_cells_by = "partition", show_trajectory_graph = FALSE)
+PGCLCs.cds <- learn_graph(PGCLCs.cds)
+plot_cells(PGCLCs.cds, show_trajectory_graph = TRUE)
+PGCLCs.cds <- order_cells(PGCLCs.cds)
+
+# Plot cells again but in 2D
+setwd("~/phd/thesis_figures/Single_Cell_Chapter/multiome/PGCLC_on_its_own")
+pdf("monocle_pseutotime.pdf", height=6, width=7)
+plot_cells(PGCLCs.cds, color_cells_by = "pseudotime", 
+           label_roots =FALSE,
+           label_leaves	=FALSE,
+           label_branch_points =FALSE,
+           cell_size = 0.3,
+           cell_stroke=0.3,
+           show_trajectory_graph = TRUE)
+dev.off()
+
+#Use Otx2 expression to identify a possible "start" site
+plot_cells(PGCLCs.cds, genes = c("Otx2"),
+              show_trajectory_graph=FALSE,
+              color_scale = "Viridis")
+```
+
