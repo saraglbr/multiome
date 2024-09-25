@@ -1,0 +1,334 @@
+---
+title: "Cistopic_EpiLCs"
+author: "sara"
+output: html_document
+---
+---
+title: "cistopic"
+output: html_document
+date: '2022-09-30'
+---
+
+
+#Load libraries
+```{r setup, include=FALSE}
+setwd("/mnt/tchandra-lab/Sara/projects/Multiome/")
+suppressWarnings(library(cisTopic))
+library(SeuratDisk)
+library(Seurat)
+```
+
+
+
+#Load seurat object containing only EpiLCs ///////////////////////
+```{r}
+#Load filtered and normalize counts from the seurat object 
+data.atac.subset <- LoadH5Seurat("/mnt/tchandra-lab/Sara/projects/Multiome/multiome_Epi.h5seurat")
+```
+
+```{r}
+pbmc_epi <- data.atac.subset
+DefaultAssay(pbmc_epi) <- "peaks" #Dims 1-5 correlate with depth
+quality <- DepthCor(pbmc_epi) 
+pbmc_epi <- FindNeighbors(object = pbmc_epi, reduction = 'lsi', dims = 3:14)
+pbmc_epi <- FindClusters(object = pbmc_epi, verbose = FALSE, algorithm = 3, resolution= 0.2)
+pbmc_epi <- RunUMAP(object = pbmc_epi, reduction = 'lsi', dims = 3:14)
+
+ATAC_epi <- DimPlot(object = pbmc_epi, reduction = "umap", 
+                  cols = c('0'="#FDBF6F",'1'="#33A02C", 
+   '2'='#A4DFF2', "3" ="#6A3D9A", '6'= "#FB9A99", 
+     "8"= '#AC8F14', "7" = "#E31A1C", "9"="#FF7F00"
+   ) ) 
+pbmc_epi@misc$'reductions.backup'$umap <- pbmc_epi@reductions$umap
+
+```
+
+
+
+#Create cistopioc object from the seurat object/////////////////////
+```{r}
+#Prepare data so the format of rownmaes (regions) is "chr:start-end"
+rn <- rownames(data.atac.subset@assays$peaks@counts)
+rn.parts <- stringr::str_split(rn, "-")
+for (i in 1:length(rn.parts)) {
+  rn.parts[[i]] <- paste(rn.parts[[i]][1], ":", rn.parts[[i]][2], "-", rn.parts[[i]][3], sep = "")
+}
+mat <- data.atac.subset@assays$peaks@counts # gets raw counts of reads mapped to each genomic region.
+rownames(mat) <- rn.parts
+#create cistopic object
+cisTopicObject <- cisTopic::createcisTopicObject(count.matrix = mat,
+                                                 min.cells = 1,  # Minimum number of cells where a region must be accessible.
+                                                 min.regions = 1,  # Minimum number of regions where a cell must be accessible.
+                                                 is.acc = 1,  # Assumes data is accessibility data (ATAC-seq).
+                               keepCountsMatrix = TRUE, project.name = data.atac.subset@project.name)  # Keep the original count matrix in the cisTopic object.
+
+#Add metadata and umap reductions
+cisTopicObject <- addCellMetadata(cisTopicObject, data.frame(data.atac.subset@meta.data))
+seurat_reductions <-  pbmc_epi@reductions
+cisTopicObject@dr$cell$umap_seurat <- seurat_reductions$umap@cell.embeddings
+```
+
+
+
+
+#Run model ////////////////////////////////////////
+```{r}
+ALPHA= 50 #Alpha affects to the topic-cell contributions; a low alpha forces to pick for each cell a few topics with significant contribution, while a high alpha allows cells to have similar, smooth topic proportions.
+BETA = 0.1 #Beta affects to the region combinations; the lower the beta, the fewer regions a topic will have; the higher the beta, the less distinct these topics will be (i.e. there will be more overlap between the topics)
+seed <- 47 
+cisTopicObject <- runWarpLDAModels(cisTopicObject, 
+                                   alpha = ALPHA, 
+                                   beta = BETA, 
+                                   topic=c(4, 6, 8, 10, 12), #Number of topics to try
+                                   iterations = 150,  
+                                   addModels=FALSE)
+
+#check the best model based on maximum, perplexity and derivative
+png(paste0(output_basename, "cisTopic.ModelSelection.png", sep = ""), width = 6, height = 6, units = 'in', res = 200)
+par(mfrow=c(3,3))
+cisTopicObject <- selectModel(cisTopicObject, type='maximum')
+cisTopicObject <- selectModel(cisTopicObject, type='perplexity')
+cisTopicObject <- selectModel(cisTopicObject, type='derivative')
+dev.off()
+
+# save - just in case!
+save.image(file = paste0(output_basename, "initial.RData"))
+
+#Check how well the model fits the data. Stable log-likelihood indicates that the model has converged.
+logLikelihoodByIter(cisTopicObject, select=c(4, 6, 8, 10, 12))
+```
+
+```{r}
+cisTopicObject <- selectModel(cisTopicObject, select = 10)
+```
+
+
+
+
+#RETRIEVE MODEL ASSIGNMENTSl ////////////////////////////////////////
+```{r}
+cellassign <- modelMatSelection(cisTopicObject, 'cell', 'Probability')
+#run tSNE
+set.seed(seed)
+library(Rtsne)
+DR <- Rtsne(t(cellassign), pca=F)
+DRdist <- dist(DR$Y)
+#Clustering based on the density distances between cells based on the t-SNE results.
+library(densityClust)
+dclust <- densityClust(DRdist,gaussian=T)
+```
+
+```{r}
+#Identify clusters based on pre-defined density thresholds.
+dclust <- findClusters(dclust, rho = 50, delta = 2.5)
+```
+
+```{r}
+#visualize cluster thresholds and mark detected clusters
+options(repr.plot.width=6, repr.plot.height=6)
+plot(dclust$rho,dclust$delta,pch=20,cex=0.6,xlab='rho', ylab='delta')
+points(dclust$rho[dclust$peaks],dclust$delta[dclust$peaks],col="red",pch=20,cex=0.8)
+text(dclust$rho[dclust$peaks]-2,dclust$delta[dclust$peaks]+1.5,labels=dclust$clusters[dclust$peaks])
+abline(v=50)
+abline(h=2.5)
+```
+
+```{r}
+# Add the identified cluster information to the cisTopicObject metadata.
+densityClust <- dclust$clusters
+densityClust <- as.data.frame(densityClust)
+rownames(densityClust) <- cisTopicObject@cell.names
+colnames(densityClust) <- 'densityClust'
+densityClust[,1] <- as.factor(densityClust[,1])
+cisTopicObject <- addCellMetadata(cisTopicObject, densityClust)
+```
+
+```{r}
+#Run Umap. Target cell vs region (i.e. run dimension reduction on cells)
+cisTopicObject <- runUmap(cisTopicObject, target='cell', seed = seed, dims.use = 3:15,   min_dist = 0.5)
+cisTopicObject@dr$cell$Umap <- seurat_reductions$umap@cell.embeddings
+```
+
+
+
+#Visualize topic distribution/////////////////////////////
+```{r fig.height=5, fig.width=5}
+#Visualize quality metrics on the umap 
+plotFeatures(cisTopicObject, method='Umap', target='cell',
+             topic_contr=NULL, colorBy=c("nCounts", 'nAcc','densityClust', 'seurat_clusters'),
+             cex.legend = 0.8, factor.max=.75,
+             dim=2, legend=TRUE,
+             col.low='blue', col.mid='yellow', col.high='red',
+             intervals=20)
+plotFeatures(cisTopicObject, method='Umap', target='cell', topic_contr='Probability',
+             colorBy=NULL, cex.legend = 20, factor.max=.75, dim=2, legend=TRUE, col.low='darkgreen', col.mid='yellow', col.high='brown1')
+
+#Heatmap of Topic-Cell Assignments
+cellTopicHeatmap(cisTopicObject, method='Z-score', colorBy=c('seurat_clusters'), col.low = "dodgerblue", col.mid = "floralwhite", col.high = "brown1")
+
+#Region Scores
+cisTopicObject <- getRegionsScores(cisTopicObject, method='NormTop', scale=TRUE)
+```
+
+
+
+#Annotate region by types/////////////////////////////
+```{r}
+library(org.Mm.eg.db)
+library(TxDb.Mmusculus.UCSC.mm10.knownGene)
+cisTopicObject <- annotateRegions(cisTopicObject, txdb=TxDb.Mmusculus.UCSC.mm10.knownGene, annoDb='org.Mm.eg.db')
+
+par(mfrow=c(1,1))
+
+setwd("/mnt/tchandra-lab/Sara/projects/Multiome/Analysis/current/ATAC_cistopic")
+pdf("cistopic_topic_annotation_2024.pdf", height = 5, width=11)
+signaturesHeatmap(cisTopicObject, selected.signatures = 'annotation')
+dev.off
+
+plotFeatures(cisTopicObject, method='UMAP', target='region', topic_contr=NULL, colorBy=c('annotation'), cex.legend = 0.8, factor.max=.75, dim=2, legend=TRUE, intervals=20)
+
+```
+
+
+
+
+#Annotate region by function of closest gene/////////////////////////////
+```{r}
+date()
+cisTopicObject <- GREAT(cisTopicObject, genome='mm10', fold_enrichment=2, geneHits=1, sign=0.05, request_interval=10)
+date()
+```
+```{r}
+#Clusters only open in EpiLCs (or higher in EpiLCs): 1, 7, 12, 13, 14
+ontologyDotPlot(cisTopicObject, top=5, topics=c(2,7), var.y='name', order.by='Binom_Adjp_BH')
+#Clusters open in PGCLCs 2, 5, 6, 9, 
+ontologyDotPlot(cisTopicObject, top=5, topics=c(2, 5, 6, 9), var.y='name', order.by='Binom_Adjp_BH')
+#Clusters only open in Epithelia: 10, 
+ontologyDotPlot(cisTopicObject, top=5, topics=c(10), var.y='name', order.by='Binom_Adjp_BH')
+#Clusters open in mesoderm: 4, 11, 
+ontologyDotPlot(cisTopicObject, top=5, topics=c(4, 11), var.y='name', order.by='Binom_Adjp_BH')
+#Everywhere but PGCLCs: 16, 17 , 15
+ontologyDotPlot(cisTopicObject, top=5, topics=c(15,16,17), var.y='name', order.by='Binom_Adjp_BH')
+#Higher in intermediates: 3, 8, 
+ontologyDotPlot(cisTopicObject, top=5, topics=c(3, 8), var.y='name', order.by='Binom_Adjp_BH')
+```
+
+
+#Annotate region by motif enrichment////////////////////////////////////
+```{r}
+#Liftover regions to mm9 (neccesary to run this bit of the motife encicrhment)
+library(R.utils)
+url <- "http://hgdownload.soe.ucsc.edu/goldenPath/mm10/liftOver/mm10ToMm9.over.chain.gz"
+mm10Tomm9.chain <- "mm10Tomm9.over.chain"
+download.file(url, destfile = paste0(mm10Tomm9.chain, ".gz"))
+gunzip(paste0(mm10Tomm9.chain, ".gz"))
+# Import chain file
+mm10Tomm9.chain  <- import.chain(mm10Tomm9.chain)
+# Obtain liftOver dictionary (as list)
+mm10_coord <- cisTopicObject@region.ranges
+mm10_to_mm9_list <- liftOver(mm10_coord, mm10Tomm9.chain)
+```
+
+
+#Motif enrichment ------------
+```{r}
+#cisTopicObject<-binarizecisTopics(cisTopicObject)
+cisTopicObject <- binarizedcisTopicsToCtx(cisTopicObject, liftOver=mm10_to_mm9_list, genome='mm9')
+#cisTopicObject <- scoredRegionsToCtx(cisTopicObject, genome='mm10')
+
+```
+
+```{r}
+cisTopicObject <- scoredRegionsToCtx(cisTopicObject, liftOver=mm10_to_mm9_list, genome='mm9')
+pathToFeather <- '"/mnt/tchandra-lab/Sara/projects/Multiome/Analysis/current/scenic/cisTarget_Databases/mm9-regions-9species.all_regions.mc9nr.feather '
+cisTopicObject <- topicsRcisTarget(cisTopicObject, genome='mm9', pathToFeather, reduced_database=FALSE, nesThreshold=3, rocthr=0.005, maxRank=20000, nCores=4)
+cisTopicObject<- getCistromes(cisTopicObject, annotation = 'Both', nCores=5)
+```
+
+The selection of significant motifs is done based on the Normalized Enrichment Score (NES). The NES is calculated -for each motif- based on the AUC distribution of all the motifs for the gene-set [(x-mean)/sd]. Those motifs that pass the given threshold (3.0 by default) are considered significant.
+
+The first step to estimate the over-representation of each motif on the gene-set is to calculate the Area Under the Curve (AUC) for each pair of motif-geneSet. This is calculated based on the recovery curve of the gene-set on the motif ranking (genes ranked decreasingly by the score of motif in its proximity, as provided in the motifRanking database). The AUC is provided as a matrix of Motifs by GeneSets. In principle, the AUC is mostly meant as input for the next step. However, it is also possible to explore the distribution of the scores, for example in a gene-set of interest:
+
+```{r}
+Topic1_motif_enr <- cisTopicObject@binarized.RcisTarget[[1]]
+DT::datatable(Topic1_motif_enr[,-c("enrichedRegions", "TF_lowConf"), with=FALSE], escape = FALSE, filter="top", options=list(pageLength=8))
+
+Topic2_motif_enr <- cisTopicObject@binarized.RcisTarget[[2]]
+DT::datatable(Topic2_motif_enr[,-c("enrichedRegions", "TF_lowConf"), with=FALSE], escape = FALSE, filter="top", options=list(pageLength=8))
+
+Topic3_motif_enr <- cisTopicObject@binarized.RcisTarget[[3]]
+DT::datatable(Topic3_motif_enr[,-c("enrichedRegions", "TF_lowConf"), with=FALSE], escape = FALSE, filter="top", options=list(pageLength=8))
+
+Topic4_motif_enr <- cisTopicObject@binarized.RcisTarget[[4]]
+DT::datatable(Topic4_motif_enr[,-c("enrichedRegions", "TF_lowConf"), with=FALSE], escape = FALSE, filter="top", options=list(pageLength=8))
+
+Topic5_motif_enr <- cisTopicObject@binarized.RcisTarget[[5]]
+DT::datatable(Topic5_motif_enr[,-c("enrichedRegions", "TF_lowConf"), with=FALSE], escape = FALSE, filter="top", options=list(pageLength=8))
+
+Topic6_motif_enr <- cisTopicObject@binarized.RcisTarget[[6]]
+DT::datatable(Topic6_motif_enr[,-c("enrichedRegions", "TF_lowConf"), with=FALSE], escape = FALSE, filter="top", options=list(pageLength=8))
+
+Topic7_motif_enr <- cisTopicObject@binarized.RcisTarget[[7]]
+DT::datatable(Topic7_motif_enr[,-c("enrichedRegions", "TF_lowConf"), with=FALSE], escape = FALSE, filter="top", options=list(pageLength=8))
+
+Topic8_motif_enr <- cisTopicObject@binarized.RcisTarget[[8]]
+DT::datatable(Topic8_motif_enr[,-c("enrichedRegions", "TF_lowConf"), with=FALSE], escape = FALSE, filter="top", options=list(pageLength=8))
+
+Topic9_motif_enr <- cisTopicObject@binarized.RcisTarget[[9]]
+DT::datatable(Topic9_motif_enr[,-c("enrichedRegions", "TF_lowConf"), with=FALSE], escape = FALSE, filter="top", options=list(pageLength=8))
+
+Topic10_motif_enr <- cisTopicObject@binarized.RcisTarget[[10]]
+DT::datatable(Topic10_motif_enr[,-c("enrichedRegions", "TF_lowConf"), with=FALSE], escape = FALSE, filter="top", options=list(pageLength=8))
+
+Topic12_motif_enr <- cisTopicObject@binarized.RcisTarget[[12]]
+DT::datatable(Topic12_motif_enr[,-c("enrichedRegions", "TF_lowConf"), with=FALSE], escape = FALSE, filter="top", options=list(pageLength=8))
+
+Topic11_motif_enr <- cisTopicObject@binarized.RcisTarget[[11]]
+DT::datatable(Topic11_motif_enr[,-c("enrichedRegions", "TF_lowConf"), with=FALSE], escape = FALSE, filter="top", options=list(pageLength=8))
+
+Topic13_motif_enr <- cisTopicObject@binarized.RcisTarget[[13]]
+DT::datatable(Topic13_motif_enr[,-c("enrichedRegions", "TF_lowConf"), with=FALSE], escape = FALSE, filter="top", options=list(pageLength=8))
+
+
+Topic14_motif_enr <- cisTopicObject@binarized.RcisTarget[[14]]
+DT::datatable(Topic14_motif_enr[,-c("enrichedRegions", "TF_lowConf"), with=FALSE], escape = FALSE, filter="top", options=list(pageLength=8))
+
+Topic15_motif_enr <- cisTopicObject@binarized.RcisTarget[[15]]
+DT::datatable(Topic15_motif_enr[,-c("enrichedRegions", "TF_lowConf"), with=FALSE], escape = FALSE, filter="top", options=list(pageLength=8))
+
+Topic16_motif_enr <- cisTopicObject@binarized.RcisTarget[[16]]
+DT::datatable(Topic16_motif_enr[,-c("enrichedRegions", "TF_lowConf"), with=FALSE], escape = FALSE, filter="top", options=list(pageLength=8))
+
+Topic17_motif_enr <- cisTopicObject@binarized.RcisTarget[[17]]
+DT::datatable(Topic17_motif_enr[,-c("enrichedRegions", "TF_lowConf"), with=FALSE], escape = FALSE, filter="top", options=list(pageLength=8))
+```
+```{r}
+write.csv(Topic1_motif_enr, "Topic11_motif_enr.csv")
+write.csv(Topic2_motif_enr, "Topic11_motif_enr.csv")
+write.csv(Topic3_motif_enr, "Topic11_motif_enr.csv")
+write.csv(Topic4_motif_enr, "Topic11_motif_enr.csv")
+write.csv(Topic5_motif_enr, "Topic11_motif_enr.csv")
+write.csv(Topic6_motif_enr, "Topic11_motif_enr.csv")
+write.csv(Topic7_motif_enr, "Topic11_motif_enr.csv")
+write.csv(Topic8_motif_enr, "Topic11_motif_enr.csv")
+write.csv(Topic9_motif_enr, "Topic11_motif_enr.csv")
+write.csv(Topic10_motif_enr, "Topic11_motif_enr.csv")
+write.csv(Topic11_motif_enr, "Topic11_motif_enr.csv")
+write.csv(Topic12_motif_enr, "Topic11_motif_enr.csv")
+write.csv(Topic13_motif_enr, "Topic11_motif_enr.csv")
+write.csv(Topic14_motif_enr, "Topic11_motif_enr.csv")
+write.csv(Topic15_motif_enr, "Topic11_motif_enr.csv")
+write.csv(Topic16_motif_enr, "Topic11_motif_enr.csv")
+write.csv(Topic17_motif_enr, "Topic11_motif_enr.csv")
+```
+
+
+#get bed files
+```{r}
+setwd("/mnt/tchandra-lab/Sara/projects/Multiome/Analysis/current/ATAC_cistopic/")
+getBedFiles(cisTopicObject, "/mnt/tchandra-lab/Sara/projects/Multiome/Analysis/current/ATAC_cistopic")
+```
+
+```{r}
+saveRDS(cisTopicObject, file='WarpLDA_cisTopicObject_Epi.Rds')
+```
