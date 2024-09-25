@@ -23,7 +23,7 @@ library(enrichplot)
 ```
 
 
-#Load Seurat object after peak calling with MACS2 and normalization of both RNA and ATAC-seq 
+#Load Seurat object after peak calling with MACS2 and normalization 
 ```{r}
 setwd("~/phd/scmultiome_analysis")
 pbmc_filter <- LoadH5Seurat("multiome_SCT_PEAKS_only.h5seurat")
