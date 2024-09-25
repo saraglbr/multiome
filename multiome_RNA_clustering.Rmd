@@ -1,0 +1,134 @@
+---
+title: "multiome_RNA_cell_populations"
+author: "saraglbr"
+output: html_document
+---
+
+Objective of this part of the code is to use the RNA seq to identify populations of interest (EpiLCs and PGCLCs) based on gene expression of known markers, and identify the identity of "other" cells within PGCLC aggregates. Also to study the heterogeneity of EpiLCs at the RNA-seq level
+
+#Libraries
+```{r}
+library(Seurat)
+library(dplyr)
+library(patchwork)
+library(Signac)
+library(SeuratDisk)
+library(monocle3)
+library(tidyr)
+library(ggplot2)
+library(org.Mm.eg.db)
+library(clusterProfiler)
+library(enrichplot)
+
+```
+
+
+#Load Seurat object after peak calling with MACS2 and normalization of both RNA and ATAC-seq 
+```{r}
+setwd("~/phd/scmultiome_analysis")
+pbmc_filter <- LoadH5Seurat("multiome_SCT_PEAKS_only.h5seurat")
+```
+
+
+#RNA-------------------------------
+#Find top features and visualize dimensions 
+```{r}
+pbmc_filter <- FindVariableFeatures(pbmc_filter, selection.method = "vst", nfeatures = 2000)
+top10 <- head(VariableFeatures(pbmc_filter), 10)
+
+#Visualize top variable features 
+setwd("~/phd/thesis_figures/Single_Cell_Chapter/panels")
+pdf("top_variable_features.pdf")
+plot1 <- VariableFeaturePlot(pbmc_filter)
+plot2 <- LabelPoints(plot = plot1, points = top10, repel = TRUE)
+plot1
+plot2
+dev.off
+
+#Visualize dimensions 
+DefaultAssay(pbmc_filter) <- "SCT"
+#Print the names of the top 5 genes contributing to each dimension
+print(pbmc_filter[["pca"]], dims = 1:5, nfeatures = 5)
+
+#Generate a heatmap of top genes contributing to the first 6 dimensions
+pdf("visualize_dimensions.pdf")
+DimHeatmap(pbmc_filter, dims = 1:6, cells = 500, balanced = TRUE)
+
+#Visualize the significance of each dimension (PC)
+VizDimLoadings(pbmc_filter, dims = 1:2, reduction = "pca")
+ElbowPlot(pbmc_filter)
+
+dev.off
+
+JackStrawPlot(
+  pbmc_filter,
+  dims = 1:15,
+  cols = NULL,
+  reduction = "pca"
+)
+
+```
+
+#UMAP
+```{r}
+#UMAP - 10dim 0.5res
+DefaultAssay(pbmc_filter) <- "SCT"
+pbmc_filter <- FindNeighbors(pbmc_filter, dims = 1:11)
+pbmc_filter <- FindClusters(pbmc_filter, resolution = 0.4)
+pbmc_filter <- RunUMAP(pbmc_filter, dims = 1:11)
+
+#UMAP coloured by clusters
+setwd("~/phd/thesis_figures/Single_Cell_Chapter/panels")
+pdf("UMAP_no_labels.pdf")
+DimPlot(pbmc_filter, reduction = "umap")
+dev.off 
+#Color UMAP based on sample
+setwd("~/phd/thesis_figures/Single_Cell_Chapter/panels")
+pdf("UMAP_per_sample.pdf")
+DimPlot(pbmc_filter, reduction = "umap",   group.by = "sample")
+dev.off
+```
+
+```{r fig.width=13, fig.height=5}
+#Check on UMAP if there is a correlation between clustering and changes in nFeature or nCount (would indicate that cells are clustering based on quality of sequencing rather than biology)
+pdf("featureplot_quality.pdf", width = 13, height=5)
+FeaturePlot(pbmc_filter, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3, cols = c("green", "red"))
+dev.off
+```
+
+
+
+
+#Annotate RNA clusters as cell populations -----------------------------------
+
+```{r}
+#Create a function to find markers for each cluster, and save markers into a CSV, returns a list of the top 20 genes  
+analyze_cluster <- function(cluster_ident) {
+  # Find markers
+  cluster_markers <- FindMarkers(pbmc_filter, ident.1 = cluster_ident, min.pct = 0.25)
+  
+  # Save cluster markers to CSV
+  cluster_markers_df <- as.data.frame(cluster_markers)
+  write.csv(cluster_markers_df, file = paste0("cluster", cluster_ident, "_markers.csv"), row.names = TRUE)
+  
+  # Return the top 20 genes
+  return(rownames(head(cluster_markers, n = 20)))
+}
+
+```
+
+```{r}
+#Run the fuction for all 10 clusters
+cluster0 <- analyze_cluster(0)
+cluster1 <- analyze_cluster(1)
+cluster2 <- analyze_cluster(2)
+cluster3 <- analyze_cluster(3)
+cluster4 <- analyze_cluster(4)
+cluster5 <- analyze_cluster(5)
+cluster6 <- analyze_cluster(6)
+cluster7 <- analyze_cluster(7)
+cluster8 <- analyze_cluster(8)
+cluster10 <- analyze_cluster(9)
+```
+
+
