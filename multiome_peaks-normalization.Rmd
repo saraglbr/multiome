@@ -62,7 +62,13 @@ pbmc_filter <- RunTFIDF(pbmc_filter)
 
 #Dimension reduction - similar to a PCA
 pbmc_filter <- RunSVD(pbmc_filter)
+```
 
+#Normalize RNA seq
+```{r}
+DefaultAssay(pbmc_filter) <- "RNA"
+pbmc_filter <- SCTransform(pbmc_filter)
+pbmc_filter <- RunPCA(pbmc_filter)
 ```
 
 #Save normalized seurat object 
