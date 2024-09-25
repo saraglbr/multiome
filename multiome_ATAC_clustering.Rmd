@@ -1,0 +1,823 @@
+---
+title: "multiome_RNA_cell_populations"
+author: "saraglbr"
+output: html_document
+---
+
+Objective of this part of the code is to use the ATAC seq to identify populations of interest (EpiLCs and PGCLCs) based on regions of open chromatin 
+
+#Libraries
+```{r}
+library(Seurat)
+library(dplyr)
+library(patchwork)
+library(Signac)
+library(SeuratDisk)
+library(monocle3)
+library(tidyr)
+library(ggplot2)
+library(org.Mm.eg.db)
+library(clusterProfiler)
+library(enrichplot)
+
+```
+
+
+#Load Seurat object after peak calling with MACS2 and normalization of both RNA and ATAC-seq 
+```{r}
+setwd("~/phd/scmultiome_analysis")
+pbmc_filter <- LoadH5Seurat("multiome_SCT_PEAKS_only.h5seurat")
+```
+
+
+
+#Perform dimensionality reduction and genrate a UMAP for visualization
+```{r fig.width=13, fig.height=6}
+#Dimension reduction and SLI 
+DefaultAssay(pbmc_filter) <- "peaks"
+pbmc_filter <- FindTopFeatures(pbmc_filter, min.cutoff = 5)
+pbmc_filter <- RunTFIDF(pbmc_filter)
+pbmc_filter <- RunSVD(pbmc_filter)
+
+#Correlation between dimensions and depth 
+pdf("quality_ATAC.pdf")
+DepthCor(pbmc_filter)
+dev.off
+
+#Dimensions 1 correlate with depth so it will be excluded from downstream analysis 
+DefaultAssay(pbmc_filter) <- "peaks"
+pbmc_filter <- FindNeighbors(object = pbmc_filter, reduction = 'lsi', dims = 2:15)
+pbmc_filter <- FindClusters(object = pbmc_filter, verbose = FALSE, algorithm = 3, resolution= 0.35)
+pbmc_filter <- RunUMAP(object = pbmc_filter, reduction = 'lsi', dims = 2:15)
+pbmc_filter@meta.data$UMAPATAC <- pbmc_filter@reductions$lsi@cell.embeddings[, 1:2]
+
+setwd("~/phd/thesis_figures/Single_Cell_Chapter/panels")
+pdf("ATAC_UMAP.pdf")
+DimPlot(object = pbmc_filter, label = TRUE,   cols = c('0'="#FDBF6F",'1'='#B3DE69', "2"="#33A02C", 
+   '3'='#A4DFF2','4'='#4B4BF7', "5" ="#6A3D9A", '6'= "#FB9A99", 
+     "8"= '#AC8F14', "7" = "#E31A1C", "9"="#FF7F00"
+   ) ) 
+dev.off
+```
+
+```{r fig.width=13, fig.height=6}
+setwd("~/phd/thesis_figures/Single_Cell_Chapter/panels")
+pdf("ATAC_UMAP_after_filtering.pdf")
+FeaturePlot(pbmc_filter, features = c("nCount_ATAC", 'TSS.enrichment', 'blacklist_ratio', 'nucleosome_signal'), ncol = 2, cols = c("green", "red"))
+dev.off
+```
+
+
+
+#All - Comapirson between ATAC-seq of all EpiLCs vs all day 2 PGCLC aggregates
+```{r}
+pbmc_filter
+DimPlot(pbmc_filter, reduction="umap")
+DefaultAssay(pbmc_filter) <- "peaks"
+
+pbmc_filter <- FindClusters(pbmc_filter, verbose=FALSE, algorithm = 3, resolution=0.05)
+DimPlot(pbmc_filter, reduction="umap")
+
+ATAC_epi <- FindMarkers(pbmc_filter,
+            ident.1 = "0")
+
+ATAC_epi <- ATAC_epi[ATAC_epi$p_val<0.1&ATAC_epi$avg_log2FC>0.1, ]
+open_epi_genes <- ClosestFeature(pbmc_filter, regions = rownames(ATAC_epi))
+
+
+ATAC_d2 <- FindMarkers(pbmc_filter, 
+                       ident.1="1")
+
+ATAC_d2 <- ATAC_d2[ATAC_d2$p_val<0.05&ATAC_d2$avg_log2FC>0.25, ]
+open_D2_genes <- ClosestFeature(pbmc_filter, regions=rownames(ATAC_d2))
+
+#GO enrichemnt 
+#Epi
+FeaturePlot(pbmc_filter, features = rownames(ATAC_epi[1, ]),
+            pt.size=0.1,
+            cols= c("burlywood1", "darkblue"))
+
+entrez_epi <- bitr(open_epi_genes[ ,"gene_name"], fromType="SYMBOL", 
+                   toType = "ENTREZID", OrgDb = org.Mm.eg.db)
+epi_enrichment <- enrichGO(entrez_epi$ENTREZID,
+                           OrgDb = org.Mm.eg.db,readable = T,
+                           ont = "BP", pvalueCutoff = 0.05, qvalueCutoff = 0.10)
+epi_enrichment_plot <- barplot(epi_enrichment, showCategory=5)
+epi_enrichment_plot
+epi_enrichment <- epi_enrichment@result
+
+#D2
+FeaturePlot(pbmc_filter, features = rownames(ATAC_d2[1, ]),
+            pt.size=0.1,
+            cols= c("burlywood1", "darkblue"))
+
+entrez_d2 <- bitr(open_D2_genes[ ,"gene_name"], fromType="SYMBOL", 
+                   toType = "ENTREZID", OrgDb = org.Mm.eg.db)
+d2_enrichment <- enrichGO(entrez_d2$ENTREZID,
+                           OrgDb = org.Mm.eg.db,readable = T,
+                           ont = "BP", pvalueCutoff = 0.05, qvalueCutoff = 0.10)
+d2_enrichment_plot <- barplot(d2_enrichment, showCategory=5)
+d2_enrichment_plot
+d2_enrichment <- d2_enrichment@result
+
+
+
+epi_enrichment <- merge(epi_enrichment, open_epi_genes )
+setwd("~/phd/thesis_figures/Single_Cell_Chapter/multiome/between_samples")
+write.csv(epi_enrichment, "Epi_enrichment.csv")
+write.csv(ATAC_epi, "ATAC_epi_open.csv")
+
+write.csv(d2_enrichment, "D2_enrichment.csv")
+write.csv(ATAC_d2, "ATAC_d2_open.csv")
+
+
+
+setwd("~/phd/thesis_figures/Single_Cell_Chapter/multiome/between_samples")
+pdf("enrichment_plot_open_epi.pdf", height=4, width=5)
+epi_enrichment_plot
+dev.off
+d2_enrichment_plot
+pdf("essrb_atac.pdf")
+plot1 | plot2
+dev.off
+
+```
+
+
+
+
+#Annotate clusters by assessing the differentially accesible region and their function
+
+```{r}
+#Create a function to find differentially accesible regions for each cluster, save markers into a CSV and return a list of the top 20 genes  
+analyze_cluster <- function(cluster_ident) {
+  # Find markers
+  cluster_markers <- FindMarkers(pbmc_filter, ident.1 = cluster_ident, min.pct = 0.25)
+
+  # Save cluster markers to CSV
+  cluster_markers_df <- as.data.frame(cluster_markers)
+  write.csv(cluster_markers_df, file = paste0("ATAC_cluster", cluster_ident, "_markers.csv"), row.names = TRUE)
+  
+  # Return the top 20 genes
+  return(cluster_markers[cluster_markers$avg_log2FC>0.025, ])
+}
+
+```
+
+```{r}
+#Run the fuction for all 9 clusters
+cluster0 <- analyze_cluster(0)
+cluster1 <- analyze_cluster(1)
+cluster2 <- analyze_cluster(2)
+cluster3 <- analyze_cluster(3)
+cluster4 <- analyze_cluster(4)
+cluster5 <- analyze_cluster(5)
+cluster6 <- analyze_cluster(6)
+cluster7 <- analyze_cluster(7)
+cluster8 <- analyze_cluster(8)
+cluster10 <- analyze_cluster(9)
+```
+
+
+
+#Focus on EpiLC clusters 
+```{r}
+#Load differentially accesbile regions (DAR)
+setwd("~/phd/thesis_figures/Single_Cell_Chapter/multiome/ATAC_clusters_markers")
+cluster0 <- read.csv("ATAC_cluster0_markers.csv")
+cluster2 <- read.csv("ATAC_cluster2_markers.csv")
+cluster3 <- read.csv("ATAC_cluster3_markers.csv")
+cluster5 <- read.csv("ATAC_cluster5_markers.csv")
+
+#Find the closest genes to each DAR
+cluster0_Genes <- ClosestFeature(pbmc_filter, regions = rownames(cluster0))
+cluster2_Genes <- ClosestFeature(pbmc_filter, regions = rownames(cluster2))
+cluster3_Genes <- ClosestFeature(pbmc_filter, regions = rownames(cluster3))
+cluster5_Genes <- ClosestFeature(pbmc_filter, regions = rownames(cluster5))
+
+
+#Attempt to do GO enrichment with differentially open genes -  no result
+genes_open <- cluster5_Genes[ ,"gene_name"] 
+open_entrez = bitr(genes_open, fromType = "SYMBOL", toType = c("ENTREZID"), OrgDb =
+                     org.Mm.eg.db)  
+open_enrichment = enrichGO(gene = open_entrez$ENTREZID, OrgDb = org.Mm.eg.db,readable = T,
+                           ont = "BP", pvalueCutoff = 0.05, qvalueCutoff = 0.10)
+open_enrichment_plot = barplot(open_enrichment, showCategory=5, xlab="number of genes invovled")
+open_enrichment_plot
+open_go <- open_enrichment@result
+
+#Visualize top regions for each cluster
+pdf("freature_maps_ATACEPI_markers.pdf", height=6.5, width=8)
+FeaturePlot(
+  object = pbmc_filter,
+  features =   c("chr5-112031473-112032606", #cluster0
+                 "chr1-167497153-167498839", #cluster2
+                 "chr15-75085448-75087030", #cluster3
+                 "chr2-144247429-144248184"), #cluster5
+  cols = c("burlywood1", "darkblue"))
+
+#Visualize regions close to relevant genes 
+FeaturePlot(
+  object = pbmc_filter,
+  features =   c("chr2-153688135-153689726", #dnmt3b
+                  "chr5-19565430-19566988", # Magi2 - ovaries 
+                "chr5-98283593-98284684", #Fgf5
+                "chr11-35294716-35295587" #slit3
+                ), 
+  cols = c("burlywood1", "darkblue"))
+dev.off
+
+```
+
+
+
+
+#Select only EpiLCs to increase resoltuion 
+```{r}
+pbmc_epi <- subset(pbmc_filter, subset = sample == "EpiLC")
+
+ranges <- pbmc_epi@assays[["peaks"]]@ranges
+setwd("~/phd/thesis_figures/Single_Cell_Chapter/multiome/EpiLCs")
+write.csv(ranges, "all_peaks_epi.csv")
+```
+
+```{r}
+#------------------------------------UMAP epi ATAC only---------------------------------
+DefaultAssay(pbmc_epi) <- "peaks" #Dims 1-5 correlate with depth
+quality <- DepthCor(pbmc_epi) 
+pbmc_epi <- FindNeighbors(object = pbmc_epi, reduction = 'lsi', dims = 3:14)
+pbmc_epi <- FindClusters(object = pbmc_epi, verbose = FALSE, algorithm = 3, resolution= 0.2)
+pbmc_epi <- RunUMAP(object = pbmc_epi, reduction = 'lsi', dims = 3:14)
+
+
+ATAC_epi <- DimPlot(object = pbmc_epi, reduction = "umap", 
+                  cols = c('0'="#FDBF6F",'1'="#33A02C", 
+   '2'='#A4DFF2', "3" ="#6A3D9A", '6'= "#FB9A99", 
+     "8"= '#AC8F14', "7" = "#E31A1C", "9"="#FF7F00"
+   
+   ) ) 
+
+setwd("~/phd/thesis_figures/Single_Cell_Chapter/panels/EpiLCs")
+pdf("UMAP_EpiLC_ATAC.pdf", height=6, width=8)
+quality
+ATAC_epi
+dev.off
+```
+
+```{r}
+
+#--Find differentially open regions between Clusters 4 & 5(most different)------------
+da_peaks <- FindMarkers(
+  pbmc_epi,
+  ident.1 = "1")
+
+#Plot difference of top differentially open region 
+plot1 <- VlnPlot(
+  object = pbmc_epi,
+  features = rownames(da_peaks)[1],
+  pt.size = 0.05,
+    cols = c('0'="#FDBF6F",'1'="#33A02C", 
+   '2'='#A4DFF2', "3" ="#6A3D9A", '6'= "#FB9A99", 
+     "8"= '#AC8F14', "7" = "#E31A1C", "9"="#FF7F00"
+   
+   ) )
+
+plot2 <- FeaturePlot(
+  object = pbmc_epi,
+  features = rownames(da_peaks)[1],
+  pt.size = 0.2,
+  cols = c("burlywood1", "darkblue")
+)
+
+setwd("~/phd/thesis_figures/Single_Cell_Chapter/panels/EpiLCs")
+pdf("EpiLC_top_DAR.pdf", height=6, width=8)
+plot1 | plot2
+dev.off
+
+```
+
+```{r}
+
+#Sort into more open/close lists
+open <- rownames(da_peaks[da_peaks$avg_log2FC > 0.25, ])
+close<- rownames(da_peaks[da_peaks$avg_log2FC < -0.2, ])
+
+#Find closest gene
+da_peaks_Genes <- ClosestFeature(pbmc_epi, regions = open)
+da_peaks_Genes_closed <- ClosestFeature(pbmc_epi, regions = close)
+
+
+#Attempt to do GO enrichment with differentially open genes
+genes_open <- da_peaks_Genes[ ,"gene_name"] # open in PGCLCs
+open_entrez = bitr(genes_open, fromType = "SYMBOL", toType = c("ENTREZID"), OrgDb =
+                     org.Mm.eg.db)  
+open_enrichment = enrichGO(gene = open_entrez$ENTREZID, OrgDb = org.Mm.eg.db,readable = T,
+                           ont = "BP", pvalueCutoff = 0.05, qvalueCutoff = 0.10)
+open_enrichment_plot = barplot(open_enrichment, showCategory=5, xlab="number of genes invovled")
+open_enrichment_plot
+open_go <- open_enrichment@result
+
+
+
+#Save tables as csv
+setwd("~/phd/thesis_figures/Single_Cell_Chapter/panels/EpiLCs")
+write.csv(da_peaks, "DARs_cluster3.csv")
+write.csv(da_peaks_Genes, "Open_3_genes.csv")
+write.csv(da_peaks_Genes_closed, "Closed_4vs3_genes.csv")
+
+```
+
+
+
+```{r}
+#------------Find differentially open regions between Clusters 4 and everything else------------
+DefaultAssay(pbmc_epi) <- 'peaks'
+da_peaks <- FindMarkers(
+  object = pbmc_epi,
+  ident.1 = "1",
+  ident.2 = "2",
+  test.use = 'LR',
+  latent.vars = 'nCount_peaks'
+)
+
+head(da_peaks)
+
+fc <- FoldChange(pbmc_epi, ident.1 = "1", ident.2 = "2")
+
+
+#Plot difference of top differentially open region 
+plot1 <- VlnPlot(
+  object = pbmc_epi,
+  features = "chr7-126491872-126493023",
+  pt.size = 0.1
+)
+plot2 <- FeaturePlot(
+  object = pbmc_epi,
+  features =  "chr7-126491872-126493023",
+  pt.size = 0.1,
+  cols = c("goldenrod1", "royalblue4")
+)
+plot1 | plot2
+
+
+setwd("~/phd/thesis_figures/Single_Cell_Chapter/panels/EpiLCs")
+pdf("EpiLC_top_DAR_C4.pdf", height=6, width=8)
+plot1 | plot2
+dev.off
+
+
+#Sort into more open/close lists
+open <- rownames(da_peaks[da_peaks$avg_log2FC > 0.2, ])
+
+#Find closest gene
+da_peaks_Genes <- ClosestFeature(pbmc_epi, regions = open)
+
+
+setwd("~/phd/thesis_figures/Single_Cell_Chapter/panels/EpiLCs")
+write.csv(da_peaks, "REGIONS_cluster4.csv")
+
+```
+
+
+```{r fig.height=2.5, fig.width=9}
+#---------------------------Divide cells into Otx2 pos and neg-----------------------------
+DefaultAssay(pbmc_epi) <- "SCT"
+
+setwd("~/phd/thesis_figures/Single_Cell_Chapter/panels/EpiLCs")
+pdf("EpiLC_marker_expression_ATAC_umap.pdf", height=2.5, width=13)
+FeaturePlot(pbmc_epi, features = c("Otx2", "Fgf5", "Dnmt3b", "Nanog"),
+            cols = c("cadetblue2", "red"), reduction = "umap", ncol=4)
+dev.off
+
+
+poscells <- WhichCells(pbmc_epi, expression = Otx2 > 0)
+negcells <- WhichCells(pbmc_epi, expression = Otx2 == 0)
+pbmc_epi$Otx2_expression<- ifelse(colnames(pbmc_epi) %in% poscells, "Pos", "Neg")
+DimPlot(object = pbmc_epi,  reduction = "umap", group.by = "Otx2_expression") 
+
+#Find differentially open regions between Otx2 positive and Otx2 negative------------
+pbmc_epi <- RegroupIdents(pbmc_epi, metadata = "Otx2_expression")
+Idents(object = pbmc_epi) <- pbmc_epi@meta.data$Otx2_expression
+DefaultAssay(pbmc_epi) <- "peaks" 
+da_peaks_otx2 <- FindMarkers(
+  pbmc_epi,
+  ident.1 = "Pos",
+  ident.2 = "Neg") 
+
+#Nothing found, try again with student t-test
+da_peaks_otx2 <- FindMarkers(
+  pbmc_epi,
+  ident.1 = "Pos",
+  ident.2 = "Neg",
+  test.use = "roc") 
+
+#Warning: No features pass logfc.threshold threshold; returning empty data.frame
+
+```
+
+
+#Focus on ATAC-seq clusters in day 2 PGCLC aggregates
+```{r width=10}
+setwd("~/phd/thesis_figures/Single_Cell_Chapter/multiome/ATAC_clusters_markers")
+cluster1 <- read.csv("ATAC_cluster1_markers.csv")
+cluster4 <- read.csv("ATAC_cluster4_markers.csv")
+cluster6 <- read.csv("ATAC_cluster6_markers.csv")
+cluster7 <- read.csv("ATAC_cluster7_markers.csv")
+cluster8 <- read.csv("ATAC_cluster8_markers.csv")
+cluster9 <- read.csv("ATAC_cluster9_markers.csv")
+
+
+cluster1_Genes <- ClosestFeature(pbmc_filter, regions = cluster1$X)
+cluster4_Genes <- ClosestFeature(pbmc_filter, regions = cluster4$X)
+cluster6_Genes <- ClosestFeature(pbmc_filter, regions = cluster6$X)
+cluster7_Genes <- ClosestFeature(pbmc_filter, regions = cluster7$X)
+cluster8_Genes <- ClosestFeature(pbmc_filter, regions = cluster8$X)
+cluster9_Genes <- ClosestFeature(pbmc_filter, regions = cluster9$X)
+
+
+```
+
+
+```{r height=10, width=15, }
+#Visualize top differentially accesible regions - related to relevant genes 
+setwd("~/phd/thesis_figures/Single_Cell_Chapter/multiome/ATAC_clusters_markers")
+pdf("feature_DAY2_markers.pdf", height=6, width=10)
+FeaturePlot(
+  object = pbmc_filter,
+  features =   c("chr7-79789160-79789795", #cluster1 Mesp1, mesoderm
+                 "chr16-22799816-22801082", #Crygs
+                 "chr4-141292846-141293433", #Epha2 related to primitive streak "EphA2 expression is first observed along the primitive streak in gastrulation stage embryos (6.5–7.5 days post coitum (dpc))." cluster6 (pink)
+                 "chr12-86501635-86502146", #essrb (PGCLCs)
+                 "chr16-45124454-45125157", #Ccdc80
+                 "chr5-128541394-128542551" #5930412G12Rik
+                 ),
+   pt.size = 0.0001, cols = c("burlywood1", "darkblue"), ncol=3)
+dev.off
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+
+#Sort into more open/close lists
+open <- rownames(da_peaks[da_peaks$avg_log2FC > 0.25, ])
+close<- rownames(da_peaks[da_peaks$avg_log2FC < -0.2, ])
+
+#Find closest gene
+da_peaks_Genes <- ClosestFeature(pbmc_epi, regions = open)
+da_peaks_Genes_closed <- ClosestFeature(pbmc_epi, regions = close)
+
+
+#Attempt to do GO enrichment with differentially open genes
+genes_open <- da_peaks_Genes[ ,"gene_name"] # open in PGCLCs
+open_entrez = bitr(genes_open, fromType = "SYMBOL", toType = c("ENTREZID"), OrgDb =
+                     org.Mm.eg.db)  
+open_enrichment = enrichGO(gene = open_entrez$ENTREZID, OrgDb = org.Mm.eg.db,readable = T,
+                           ont = "BP", pvalueCutoff = 0.05, qvalueCutoff = 0.10)
+open_enrichment_plot = barplot(open_enrichment, showCategory=5, xlab="number of genes invovled")
+open_enrichment_plot
+open_go <- open_enrichment@result
+
+
+
+#Save tables as csv
+setwd("~/phd/thesis_figures/Single_Cell_Chapter/panels/EpiLCs")
+write.csv(da_peaks, "DARs_cluster3.csv")
+write.csv(da_peaks_Genes, "Open_3_genes.csv")
+write.csv(da_peaks_Genes_closed, "Closed_4vs3_genes.csv")
+
+```
+
+
+```{r fig.height=2.5, fig.width=9}
+#---------------------------Divide cells into Otx2 pos and neg-----------------------------
+DefaultAssay(pbmc_epi) <- "SCT"
+
+setwd("~/phd/thesis_figures/Single_Cell_Chapter/panels/EpiLCs")
+pdf("EpiLC_marker_expression_ATAC_umap.pdf", height=2.5, width=13)
+FeaturePlot(pbmc_epi, features = c("Otx2", "Fgf5", "Dnmt3b", "Nanog"),
+            cols = c("cadetblue2", "red"), reduction = "umap", ncol=4)
+dev.off
+
+
+poscells <- WhichCells(pbmc_epi, expression = Otx2 > 0)
+negcells <- WhichCells(pbmc_epi, expression = Otx2 == 0)
+pbmc_epi$Otx2_expression<- ifelse(colnames(pbmc_epi) %in% poscells, "Pos", "Neg")
+DimPlot(object = pbmc_epi,  reduction = "umap", group.by = "Otx2_expression") 
+
+#Find differentially open regions between Otx2 positive and Otx2 negative------------
+pbmc_epi <- RegroupIdents(pbmc_epi, metadata = "Otx2_expression")
+Idents(object = pbmc_epi) <- pbmc_epi@meta.data$Otx2_expression
+DefaultAssay(pbmc_epi) <- "peaks" 
+da_peaks_otx2 <- FindMarkers(
+  pbmc_epi,
+  ident.1 = "Pos",
+  ident.2 = "Neg") 
+
+#Nothing found, try again with student t-test
+da_peaks_otx2 <- FindMarkers(
+  pbmc_epi,
+  ident.1 = "Pos",
+  ident.2 = "Neg",
+  test.use = "roc") 
+
+#Warning: No features pass logfc.threshold threshold; returning empty data.frame
+
+```
+
+```{r fig.height=2.5, fig.width=9}
+#UMAP - 10dim 0.5res
+DefaultAssay(pbmc_epi) <- "SCT"
+pbmc_epi <- FindNeighbors(pbmc_epi, dims = 1:10)
+pbmc_epi <- FindClusters(pbmc_epi, resolution = 0.2)
+pbmc_epi <- RunUMAP(pbmc_epi, dims = 1:10)
+
+#UMAP coloured by clusters
+RNA_epi <- DimPlot(pbmc_epi, reduction = "umap")
+
+#Color UMAP based on sample
+setwd("~/phd/thesis_figures/Single_Cell_Chapter/panels/EpiLCs")
+pdf("Epi_UMAPs.pdf", height=6, width=5.5)
+RNA_epi
+ATAC_epi
+dev.off
+
+
+setwd("~/phd/thesis_figures/Single_Cell_Chapter/panels/EpiLCs")
+pdf("EpiLC_marker_expression_RNA_umap.pdf", height=2.5, width=13)
+FeaturePlot(pbmc_epi, features = c("Mecom", "Fgf5", "Dnmt3b", "Nanog"),
+            cols = c("cadetblue2", "red"), reduction = "umap", ncol=4)
+dev.off
+```
+```{r}
+setwd("~/phd/thesis_figures/Single_Cell_Chapter/panels")
+SaveH5Seurat(pbmc_epi, filename ="multiome_Epi", overwrite = TRUE)
+```
+```{r}
+setwd("~/phd/thesis_figures/Single_Cell_Chapter/panels")
+pbmc_epi <- LoadH5Seurat("multiome_Epi.h5seurat")
+
+```
+
+
+```{r}
+setwd("~/phd/thesis_figures/Single_Cell_Chapter/panels/EpiLCs")
+analyze_cluster <- function(cluster_ident) {
+  # Find markers
+  cluster_markers <- FindMarkers(pbmc_epi, ident.1 = cluster_ident, min.pct = 0.25)
+  
+  # Save cluster markers to CSV
+  cluster_markers_df <- as.data.frame(cluster_markers)
+  write.csv(cluster_markers_df, file = paste0("EPI_cluster", cluster_ident, "_markers.csv"), row.names = TRUE)
+  
+  # Return the top 20 genes
+  return(rownames(head(cluster_markers, n = 20)))
+}
+
+#Run the fuction for all 10 clusters
+cluster0 <- analyze_cluster(0)
+cluster1 <- analyze_cluster(1)
+cluster2 <- analyze_cluster(2)
+cluster3 <- analyze_cluster(3)
+cluster4 <- analyze_cluster(4)
+
+
+cluster0
+cluster1 
+cluster2 
+cluster3 
+cluster4 
+
+
+```
+```{r fig.height=2.5, fig.width=9}
+setwd("~/phd/thesis_figures/Single_Cell_Chapter/panels/EpiLCs")
+pdf("EpiLC_marker_expression_RNA_umap.pdf", height=2.5, width=10.5)
+FeaturePlot(pbmc_epi, features = c(
+  "Abcc4","Arap2","Flna", "mt-Atp8"
+),
+            cols = c("cadetblue2", "red"), reduction = "umap", ncol=4)
+dev.off
+
+FeaturePlot(pbmc_epi, features = c(
+  "Abcc4", "Peg3", 
+  "Ano3", "Arap2",
+  "Mecom", "Pleg",
+  "Anks1b", "Rhox5",
+  "Flna"
+),
+            cols = c("cadetblue2", "red"), reduction = "umap", ncol=4)
+
+
+```
+#Select PGCLCs
+```{r}
+pbmc_filter$sample[pbmc_filter$sample=="NA"] <- "D2 aggregate"
+table(pbmc_filter@meta.data$sample)
+
+pbmc_pg <- subset(pbmc_filter, subset = sample ==  "D2 aggregate")
+
+```
+
+```{r}
+VlnPlot(
+  object = pbmc_filter,
+  features = c("nCount_ATAC", 'TSS.enrichment', 'blacklist_ratio', 'nucleosome_signal'),
+  pt.size = 0,
+  ncol = 4,
+  group.by="sample"
+  )
+```
+```{r}
+DefaultAssay(pbmc_pg) <- "SCT"
+
+#PCA
+pbmc_pg <- RunPCA(pbmc_pg)
+ElbowPlot(pbmc_pg)
+
+DimHeatmap((pbmc_pg), dims = 5:11, cells = 500, balanced = TRUE)
+
+pbmc_pg <- FindNeighbors(pbmc_pg, dims = 2:10)
+pbmc_pg <- FindClusters(pbmc_pg, resolution = 0.25)
+pbmc_pg <- RunUMAP(pbmc_pg, dims = 2:10)
+RNA_PGCLC_UMAP <- DimPlot(object = pbmc_pg, reduction = "umap", label = FALSE, cols =  c("#D39200", "#93AA00" , "brown1", "#00B9E3", "#DB72FB", "#FF61C3")) 
+
+
+
+setwd("~/phd/thesis_figures/Single_Cell_Chapter/multiome/PGCLC_on_its_own")
+pdf("UMAP_PGCLC.pdf", height=6, width=7)
+RNA_PGCLC_UMAP
+dev.off
+
+FeaturePlot(pbmc_pg, features = c("Esrrb","Tfap2c", 
+                                      "T", "Mixl1", "Krt19",
+                                      "Otx2"),
+            cols = c("cadetblue2", "red"), reduction = "umap", ncol=3)
+
+
+FeaturePlot(pbmc_pg, features = c("Lef1","Tcf7l1", 
+                                      "Zeb2", "Grhl2"),
+            cols = c("cadetblue2", "red"), reduction = "umap", ncol=2)
+
+
+```
+
+```{r}
+#------------------------------------UMAP epi ATAC only---------------------------------
+DefaultAssay(pbmc_pg) <- "peaks" #Dims 1-5 correlate with depth
+DepthCor(pbmc_pg) 
+pbmc_pg <- FindNeighbors(object = pbmc_pg, reduction = 'lsi', dims = 2:18)
+pbmc_pg <- FindClusters(object = pbmc_pg, verbose = FALSE, algorithm = 3, resolution= 0.25)
+pbmc_pg <- RunUMAP(object = pbmc_pg, reduction = 'lsi', dims = 2:18)
+
+
+
+
+FeaturePlot(pbmc_pg, features = c("Lef1","Tcf7l1", 
+                                      "Zeb2", "Grhl2"),
+            cols = c("cadetblue2", "red"), reduction = "umap", ncol=2)
+
+UMAP_ATAC <- DimPlot(object = pbmc_pg, reduction = "umap",
+       cols = c('0'='#B3DE69', "1"="#4B4BF7", 
+   '2'='#FB9A99','3'='#E31A1C', "4" ="#AC8F14", 
+   "5" ="#FF7F00"),
+   label=FALSE,  pt.size=0.9) 
+
+
+FeaturePlot(pbmc_pg, features = c("Esrrb","Tfap2c", 
+                                      "T", "Mixl1", "Fgf8",
+                                      "Zeb2"),
+            cols = c("cadetblue2", "red"), reduction = "umap", ncol=3)
+
+
+
+FeaturePlot(pbmc_pg, features = c("nCount_ATAC", 'TSS.enrichment', 'blacklist_ratio', 'nucleosome_signal'), ncol = 2, cols = c("green", "red"))
+
+new.cluster.ids <- c("Mesoderm", "Intermedaite_1", 
+                     "Intermediate_2", "PGCLCs", "Epithelia-like",
+                      "Vascular-like")
+names(new.cluster.ids) <- levels(pbmc_pg)
+pbmc_pg <- RenameIdents(pbmc_pg, new.cluster.ids)
+DimPlot(pbmc_pg, reduction = "umap", label = TRUE, label.box=TRUE) + NoLegend()
+
+
+
+
+
+RNA_clusters_UMAP_ATAC <- DimPlot(pbmc_pg, reduction = "umap", label = TRUE, label.box=TRUE) + NoLegend()
+
+
+setwd("~/phd/thesis_figures/Single_Cell_Chapter/multiome/PGCLC_on_its_own")
+pdf("UMAP_PGCLC_ATAC.pdf", height=6, width=6)
+UMAP_ATAC
+dev.off
+
+
+
+```
+```{r}
+
+#Create a function to find markers for each cluster, and save markers into a CSV, returns a list of the top 20 genes  
+analyze_cluster <- function(cluster_ident) {
+  # Find markers
+  cluster_markers <- FindMarkers(pbmc_pg, ident.1 = cluster_ident, min.pct = 0.25)
+  
+  # Save cluster markers to CSV
+  cluster_markers_df <- as.data.frame(cluster_markers)
+  write.csv(cluster_markers_df, file = paste0("cluster", cluster_ident, "_markers.csv"), row.names = TRUE)
+  
+  # Return the top 20 genes
+  return(cluster0 <- cluster_markers[cluster_markers$p_val<0.05
+                         &
+                           cluster_markers$avg_log2FC> 0.25 ,  ])
+}
+
+```
+
+```{r}
+#Run the function for all day 2 PGCLC aggregte clusters 
+setwd("~/phd/thesis_figures/Single_Cell_Chapter/multiome/ATAC_clusters_markers/pgclc_only")
+cluster0 <- analyze_cluster(0)
+cluster1 <- analyze_cluster(1)
+cluster2 <- analyze_cluster(2)
+cluster3 <- analyze_cluster(3)
+cluster4 <- analyze_cluster(4)
+cluster5 <- analyze_cluster(5)
+
+#Find closest feature 
+cluster0_genes<- ClosestFeature(pbmc_pg, regions = rownames(cluster0))
+cluster1_genes<- ClosestFeature(pbmc_pg, regions = rownames(cluster1))
+cluster2_genes<- ClosestFeature(pbmc_pg, regions = rownames(cluster2))
+cluster3_genes<- ClosestFeature(pbmc_pg, regions = rownames(cluster3))
+cluster4_genes<- ClosestFeature(pbmc_pg, regions = rownames(cluster4))
+cluster5_genes<- ClosestFeature(pbmc_pg, regions = rownames(cluster5))
+```
+
+```{r}
+#annotation of peaks - annotation done with HOMER here just check the frequency of region type
+d2_annotation <- read.csv("~/phd/thesis_figures/Single_Cell_Chapter/multiome/between_samples/D2_peak_annotation.csv")
+epi_annotation <- read.csv("~/phd/thesis_figures/Single_Cell_Chapter/multiome/between_samples/epi_peak_annotation.csv")
+d2_annotation$Annotation <- gsub("\\s*\\(.*?\\)\\s*", "", d2_annotation$Annotation)
+epi_annotation$Annotation <- gsub("\\s*\\(.*?\\)\\s*", "", epi_annotation$Annotation)
+d2_annotation_count <- as.data.frame(table(d2_annotation$Annotation))
+epi_annotation_count <- as.data.frame(table(epi_annotation$Annotation))
+ggplot(d2_annotation_count, aes(x="", y=Freq, fill=Var1)) +
+  geom_bar(stat="identity", width=1) +
+  coord_polar("y", start=0)
+ggplot(epi_annotation_count, aes(x="", y=Freq, fill=Var1)) +
+  geom_bar(stat="identity", width=1) +
+  coord_polar("y", start=0)
+```
+
+```{r}
+#GO enrichment of all clusters
+go_save <- function(genes){
+  genes_open <- genes[ ,"gene_name"] # open in PGCLCs
+open_entrez = bitr(genes_open, fromType = "SYMBOL", toType = c("ENTREZID"), OrgDb =
+                     org.Mm.eg.db)  
+open_enrichment = enrichGO(gene = open_entrez$ENTREZID, OrgDb = org.Mm.eg.db,readable = T,
+                           ont = "BP", pvalueCutoff = 0.05, qvalueCutoff = 0.10)
+open_enrichment_plot = barplot(open_enrichment, showCategory=5, xlab="number of genes invovled")
+open_go <- open_enrichment@result
+name <- paste("~/phd/thesis_figures/Single_Cell_Chapter/multiome/ATAC_clusters_markers/", deparse(substitute(genes)), "GO.csv", sep="")
+write.csv(open_go, name)
+return(open_enrichment_plot)
+}
+
+go_save(cluster1_Genes)
+go_save(cluster4_Genes)
+go_save(cluster6_Genes)
+go_save(cluster7_Genes)
+go_save(cluster8_Genes)
+go_save(cluster9_Genes)
+
+```
