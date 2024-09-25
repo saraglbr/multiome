@@ -170,8 +170,8 @@ pbmc_filter <- subset(
  x = pbmc,
    subset = nCount_ATAC < 100000 &
    nCount_RNA < 22000 &
-   nCount_ATAC > 1000 &
-   nCount_RNA > 1200 &
+   nCount_ATAC > 1500 &
+   nCount_RNA > 1500 &
    nFeature_RNA > 1500 &
    blacklist_ratio < 0.035 &
    nucleosome_signal < 1.3 &
