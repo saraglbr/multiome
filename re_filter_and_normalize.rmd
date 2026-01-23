@@ -1,0 +1,164 @@
+---
+title: "extra QC and normalization"
+output: html_notebook
+---
+
+```{r}
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(Signac)
+```
+
+#After regressing cell cycle and mitochondrial reads cluster analysis was done again but one of the EpiLC clusters didn't match previous analysis, looked into it and it was mostly made up by low-quality cells, so did some QC re-filtering to get rid of them. 
+
+then normalize & re-run UMAPS
+
+```{r}
+#Visualize UMAP
+multiome <- FindNeighbors(multiome, dims = 1:17)
+multiome <- FindClusters(multiome, resolution = 0.37)
+multiome <- RunUMAP(multiome, dims = 1:17, reduction = "pca", seed.use=30)
+
+DimPlot(multiome, reduction = "umap", label =TRUE)
+DimPlot(multiome, reduction = "umap", group.by="sample")
+DimPlot(multiome, reduction = "umap", group.by="Phase")
+
+```
+```{r}
+#One of the markers doesn't match previous analysis, check markers
+cluster_markers <- FindMarkers(multiome, ident.1 = "6", min.pct = 0.25)
+
+FeaturePlot(multiome, reduction ="umap", features= c("Malat1", "Prim2", "Plekgh1"))
+
+#Malat1 (top marker) can be associated with dying cells, check quality metric per cluster check if they are affecting UMAP
+
+FeaturePlot(multiome, reduction ="umap", features= c("nCount_RNA", "nFeature_RNA"))
+VlnPlot(multiome, features="nCount_RNA") #Clusters 0 and 6 significantly lower than the rest
+VlnPlot(multiome, features="nFeature_RNA") # same issue same clusters
+VlnPlot(multiome, features="percent.mt") #no difference per cluster
+VlnPlot(multiome, features="percent.mt", y.max=1) #no difference per cluster
+
+```
+
+##Re-filter cells 
+```{r}
+#Visualize different cut offs on the plot 
+
+#ncount
+VlnPlot(multiome, features="nCount_RNA") + geom_hline(yintercept = 5100, color = "black", size=1)
+VlnPlot(multiome, features= c("nCount_RNA"), group.by="sample") + geom_hline(yintercept = 5100, color = "black", size=1)
+
+#nfeature
+VlnPlot(multiome, features="nFeature_RNA") + geom_hline(yintercept = 2300, color = "black", size=1)
+VlnPlot(multiome, features="nFeature_RNA", group.by="sample") + geom_hline(yintercept = 2300, color = "black", size=1)
+
+#Check number of cells from each cluster to be removed before filtering 
+table(Idents(multiome), multiome$nCount_RNA > 5000 & multiome$nFeature_RNA > 2300) 
+
+#Filter 
+multiome_f <- subset(
+ x = multiome,
+ subset = nCount_RNA > 5000 &
+ nFeature_RNA > 2300
+   )
+
+DimPlot(multiome_f, reduction = "umap", label =TRUE)
+DimPlot(multiome, reduction = "umap", label =TRUE)
+
+multiome <- multiome_f
+rm(multiome_f)
+```
+
+#Re-run SCT transform with filtered object 
+```{r}
+multiome[["RNA"]] <- CreateAssayObject(counts = multiome[["SCT"]]$counts)
+DefaultAssay(multiome) <- "RNA"
+multiome <- SCTransform(multiome, vars.to.regress = c("percent.mt", vars.to.regress = c("percent.mt", "S.Score", "G2M.Score")))
+multiome <- RunPCA(multiome)
+
+```
+
+```{r}
+#Visualize the significance of each dimension (PC)
+DimHeatmap(multiome, dims = 10:15, cells = 500, balanced = TRUE)
+ElbowPlot(multiome)
+
+
+multiome <- FindNeighbors(multiome, dims = 1:13)
+multiome <- FindClusters(multiome, resolution = 0.37)
+multiome <- RunUMAP(multiome, dims = 1:17, reduction = "pca", seed.use=46)
+DimPlot(multiome, reduction = "umap_rna", label =TRUE)
+
+
+
+```
+
+#Check previous findings still visible in the reduced dataset
+```{r fig.width=10, fig.height=4}
+FeaturePlot(multiome, features = c("Lef1", "Tcf7l1"), blend = TRUE, cols = c("lightgrey", "#ff0000", "#00cc00"), order=TRUE,    max.cutoff = "q95")
+```
+
+
+
+#ATAC-clustering
+```{r}
+DefaultAssay(multiome) <- "peaks"
+multiome <- FindTopFeatures(multiome, min.cutoff = 5)
+multiome <- RunTFIDF(multiome)
+multiome <- RunSVD(multiome)
+```
+
+```{r}
+DepthCor(multiome)
+```
+```{r}
+DefaultAssay(multiome) <- "peaks"
+multiome <- FindNeighbors(object = multiome, reduction = 'lsi', dims = 2:15)
+multiome <- FindClusters(object = multiome, verbose = FALSE, algorithm = 3, resolution= 0.35)
+multiome <- RunUMAP(object = multiome, reduction = 'lsi', dims = 2:15)
+
+DimPlot(multiome, reduction = "umap", label =TRUE)
+
+multiome[["umap_atac"]] <- multiome[["umap"]]
+
+
+DimPlot(multiome, reduction = "umap_atac", label =TRUE)
+DimPlot(multiome, reduction = "umap_rna", label =TRUE)
+FeaturePlot(multiome, reduction = "umap_atac", features = c("nCount_ATAC", "nFeature_ATAC", "TSS.enrichment"))
+
+
+```
+##Multimodal UMAP
+```{r}
+
+multiome <- FindMultiModalNeighbors(
+  multiome, 
+  reduction.list = list("pca", "lsi"), # Combine RNA (pca) and ATAC (lsi)
+  dims.list = list(1:13,
+                   2:14)         # Dimensions to use for each
+)
+
+
+multiome <- RunUMAP(
+  multiome, 
+  nn.name = "weighted.nn",   # Use the combined graph
+  reduction.name = "wnn.umap", 
+  reduction.key = "wnnUMAP_",
+  use.seed=35
+)
+
+# Plot the result
+DimPlot(multiome, reduction = "wnn.umap", group.by = "sample") + 
+  ggtitle("Joint RNA + ATAC UMAP")
+
+multiome[["joint_umap"]] <- multiome[["umap"]]
+
+```
+
+```{r}
+setwd("E:/PhD/phd/thesis_figures/Single_Cell_Chapter/multiome")
+
+saveRDS(multiome, file = "multiome_regressed_vars_23012026.rds")
+```
+
