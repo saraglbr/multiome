@@ -6,25 +6,14 @@ output: html_notebook
 ```{r}
 library(Seurat)
 library(dplyr)
-library(patchwork)
-library(Signac)
 library(srtdisk)#new version of Seurat disk
 library(ggplot2)
-library(tidyr)
-library(ggplot2)
-library(org.Mm.eg.db)
-library(clusterProfiler)
-library(enrichplot)
-
 ```
 
 #Load Seurat object 
 ```{r}
 setwd("//csce.datastore.ed.ac.uk/csce/biology/groups/chambers/NGS_data_analysis/Sara/single_cell_timecourse")
 multiome <- LoadH5Seurat("multiome_all_done.h5seurat")
-#file <- Connect("multiome_all_done.h5seurat")
-#multiome <- as.Seurat(file)
-
 ```
 
 
@@ -92,5 +81,65 @@ saveRDS(multiome, file = "multiome_210126160126.rds")
 
 ```
 
+##Cell cycle 
+```{r}
+#Calculate cell cycle score 
+
+ # Get S and G2M markers from seurat
+s.genes <- cc.genes$s.genes
+g2m.genes <- cc.genes$g2m.genes
+
+#Change format of gene names to match object (mouse) 
+to_m_case <- function(genes) {
+  genes <- tolower(genes)
+  substr(genes, 1, 1) <- toupper(substr(genes, 1, 1))
+  return(genes)
+}
+
+s.genes <- to_m_case(cc.genes$s.genes)
+g2m.genes <- to_m_case(cc.genes$g2m.genes)
+
+#Calculate cell cycle scores
+multiome <- CellCycleScoring(multiome, s.features = s.genes, g2m.features = g2m.genes, set.ident = TRUE)
+
+head(multiome[[]])
+```
+
+```{r}
+DoHeatmap(multiome, features= c("Top2a", "Cdca2", "Ect2", "Dtl", "Ccne2", "Atad2"), group.by="Phase")
+
+FeaturePlot(multiome, reduction="umap", features = c("S.Score", "G2M.Score"))
+DimPlot(multiome, reduction = "umap", group.by="Phase")
+DimPlot(multiome, reduction = "umap", group.by = "seurat_clusters")
+
+```
+
+
+```{r}
+multiome <- ScaleData(multiome, 
+                      assay = "SCT", 
+                      vars.to.regress = c("percent.mt", "S.Score", "G2M.Score"),
+                      features = rownames(multiome))
+
+multiome <- RunPCA(multiome)
+
+
+#Visualize the significance of each dimension (PC)
+DimHeatmap(multiome, dims = 15:20, cells = 500, balanced = TRUE)
+VizDimLoadings(multiome, dims = 1:2, reduction = "pca")
+ElbowPlot(multiome)
+```
+
+```{r}
+#Visualize UMAP
+multiome <- FindNeighbors(multiome, dims = 1:17)
+multiome <- FindClusters(multiome, resolution = 0.37)
+multiome <- RunUMAP(multiome, dims = 1:17, reduction = "pca", seed.use=30)
+
+DimPlot(multiome, reduction = "umap", label =TRUE)
+DimPlot(multiome, reduction = "umap", group.by="sample")
+DimPlot(multiome, reduction = "umap", group.by="Phase")
+
+```
 
 
