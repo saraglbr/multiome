@@ -1,0 +1,96 @@
+---
+title: "Regress cell cycle & mitochondrial reads"
+output: html_notebook
+---
+
+```{r}
+library(Seurat)
+library(dplyr)
+library(patchwork)
+library(Signac)
+library(srtdisk)#new version of Seurat disk
+library(ggplot2)
+library(tidyr)
+library(ggplot2)
+library(org.Mm.eg.db)
+library(clusterProfiler)
+library(enrichplot)
+
+```
+
+#Load Seurat object 
+```{r}
+setwd("//csce.datastore.ed.ac.uk/csce/biology/groups/chambers/NGS_data_analysis/Sara/single_cell_timecourse")
+multiome <- LoadH5Seurat("multiome_all_done.h5seurat")
+#file <- Connect("multiome_all_done.h5seurat")
+#multiome <- as.Seurat(file)
+
+```
+
+
+```{r}
+table(multiome$sample)
+VlnPlot(multiome, assay="SCT", features = c("percent.mt"), group.by = "sample")
+```
+
+
+```{r}
+#filter samples separately based on mt (very different levels)
+multiome$sample <- as.character(multiome$sample)
+multiome$sample[multiome$sample == "NA"] <- "day2"
+table(multiome$sample)
+
+
+multiome_f <- subset(
+ x = multiome,
+ subset = (sample == "EpiLC" & percent.mt < 1) | (sample == "day2" & percent.mt <15)
+)
+
+VlnPlot(multiome_f, assay="SCT", features = c("percent.mt"), group.by = "sample",   y.max = 1,)
+
+multiome <- multiome_f
+rm (multiome_f)
+
+```
+
+
+```{r}
+#Scale data again, this rime regressing the percent.mt variable (technical, not biologically relevant)
+
+Layers(multiome[["SCT"]])
+multiome[["SCT"]]$data <- multiome[["SCT"]]$counts #original seurat object created in V4, adapt object to seurat v5
+
+multiome <- ScaleData(multiome, 
+                      assay = "SCT", 
+                      vars.to.regress = "percent.mt", 
+                      features = rownames(multiome))
+
+multiome <- RunPCA(multiome)
+
+
+
+#Visualize the significance of each dimension (PC)
+DimHeatmap(multiome, dims = 15:20, cells = 500, balanced = TRUE)
+VizDimLoadings(multiome, dims = 1:2, reduction = "pca")
+ElbowPlot(multiome)
+
+```
+
+```{r}
+#Visualize UMAP
+multiome <- FindNeighbors(multiome, dims = 1:12)
+multiome <- FindClusters(multiome, resolution = 0.4)
+multiome <- RunUMAP(multiome, dims = 1:12)
+
+DimPlot(multiome, reduction = "umap")
+DimPlot(multiome, reduction = "umap", group.by="sample")
+```
+```{r}
+
+setwd("//csce.datastore.ed.ac.uk/csce/biology/groups/chambers/NGS_data_analysis/Sara/single_cell_timecourse")
+saveRDS(multiome, file = "multiome_210126160126.rds")
+
+```
+
+
+
