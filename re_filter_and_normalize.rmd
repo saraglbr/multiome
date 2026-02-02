@@ -135,8 +135,8 @@ FeaturePlot(multiome, reduction = "umap_atac", features = c("nCount_ATAC", "nFea
 multiome <- FindMultiModalNeighbors(
   multiome, 
   reduction.list = list("pca", "lsi"), # Combine RNA (pca) and ATAC (lsi)
-  dims.list = list(1:13,
-                   2:14)         # Dimensions to use for each
+  dims.list = list(1:15,
+                   2:18)         # Dimensions to use for each
 )
 
 
@@ -152,6 +152,10 @@ multiome <- RunUMAP(
 DimPlot(multiome, reduction = "wnn.umap", group.by = "sample") + 
   ggtitle("Joint RNA + ATAC UMAP")
 
+
+DimPlot(multiome, reduction = "wnn.umap") + 
+  ggtitle("Joint RNA + ATAC UMAP")
+
 multiome[["joint_umap"]] <- multiome[["umap"]]
 
 ```
@@ -160,5 +164,68 @@ multiome[["joint_umap"]] <- multiome[["umap"]]
 setwd("E:/PhD/phd/thesis_figures/Single_Cell_Chapter/multiome")
 
 saveRDS(multiome, file = "multiome_regressed_vars_23012026.rds")
+```
+
+```{r}
+
+setwd("E:/PhD/phd/thesis_figures/Single_Cell_Chapter/multiome")
+multiome <- readRDS(file = "multiome_regressed_vars_23012026.rds")
+
+```
+```{r}
+
+multiome <- FindMultiModalNeighbors(
+  multiome, 
+  reduction.list = list("pca", "lsi"), # Combine RNA (pca) and ATAC (lsi)
+  dims.list = list(1:14,
+                   2:27)         # Dimensions to use for each
+)
+
+#1:14,
+#2:27
+
+multiome <- RunUMAP(
+  multiome, 
+  nn.name = "weighted.nn",   # Use the combined graph
+  reduction.name = "wnn.umap", 
+  reduction.key = "wnnUMAP_",
+  use.seed=35
+)
+
+
+multiome <- FindClusters(
+  multiome, 
+  graph.name = "wsnn",   # Use the integrated Weighted SNN graph
+  algorithm = 3,         # SLM algorithm (often recommended for large/multimodal data)
+  resolution = 0.3       # Adjust based on your desired granularity
+)
+
+DimPlot(multiome, reduction = "wnn.umap") + 
+  ggtitle("Joint RNA + ATAC UMAP")
+
+
+```
+```{r fig.width=7, fig.height=6}
+
+setwd("E:/PhD/phd/thesis_figures/Single_Cell_Chapter/multiome/2025")
+
+pdf("combined_umap_multiome_260126.pdf")
+
+DimPlot(multiome, reduction = "wnn.umap") + 
+  ggtitle("Joint RNA + ATAC UMAP")
+
+DimPlot(multiome, reduction = "wnn.umap", group.by="sample",  cols=c("#009966", "#ff9900")) + 
+  ggtitle("Joint RNA + ATAC UMAP")
+
+DimPlot(multiome, reduction = "wnn.umap", group.by="Phase") + 
+  ggtitle("Joint RNA + ATAC UMAP")
+
+```
+
+```{r}
+
+FeaturePlot(multiome, reduction = "wnn.umap", features= c("Tfap2c", "Prdm1", "Prdm14","T", "Fgf8", "Mixl1"), ncol=3, cols = c("cadetblue2", "red"), pt.size=0.1)
+            
+            
 ```
 
